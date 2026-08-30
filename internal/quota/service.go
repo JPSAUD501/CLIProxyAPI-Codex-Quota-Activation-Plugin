@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -160,7 +161,10 @@ func (s *Service) accounts() ([]Account, error) {
 		if provider != "codex" && typ != "codex" {
 			continue
 		}
-		if entry.Disabled || entry.Unavailable || entry.Status == "error" {
+		// Exhausted Codex credentials are reported as unavailable/error by the
+		// scheduler. They must remain visible to quota monitoring; only an
+		// explicit disable removes an account from consideration.
+		if entry.Disabled {
 			continue
 		}
 		authRaw, err := s.call(pluginabi.MethodHostAuthGet, pluginapi.HostAuthGetRequest{AuthIndex: entry.AuthIndex})
@@ -187,6 +191,15 @@ func parseAccount(entry pluginapi.HostAuthFileEntry, raw []byte) (Account, bool)
 	access := firstString(doc, "access_token", "accessToken", "token")
 	accountID := firstString(doc, "account_id", "chatgpt_account_id", "accountId")
 	plan := strings.ToLower(firstString(doc, "plan_type", "chatgpt_plan_type", "plan"))
+	if idToken := firstString(doc, "id_token", "idToken"); idToken != "" {
+		jwtAccount, jwtPlan := codexJWTInfo(idToken)
+		if accountID == "" {
+			accountID = jwtAccount
+		}
+		if plan == "" {
+			plan = jwtPlan
+		}
+	}
 	if nested, ok := doc["tokens"]; ok {
 		var tokens map[string]json.RawMessage
 		if json.Unmarshal(nested, &tokens) == nil {
@@ -212,6 +225,27 @@ func parseAccount(entry pluginapi.HostAuthFileEntry, raw []byte) (Account, bool)
 		key = entry.Name
 	}
 	return Account{Key: key, ID: entry.ID, AuthIndex: entry.AuthIndex, Label: entry.Label, Plan: plan, AccessToken: access, AccountID: accountID}, true
+}
+
+func codexJWTInfo(token string) (string, string) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || len(payload) > 64*1024 {
+		return "", ""
+	}
+	var claims struct {
+		Codex struct {
+			AccountID string `json:"chatgpt_account_id"`
+			Plan      string `json:"chatgpt_plan_type"`
+		} `json:"https://api.openai.com/auth"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(claims.Codex.AccountID), strings.ToLower(strings.TrimSpace(claims.Codex.Plan))
 }
 func firstString(m map[string]json.RawMessage, keys ...string) string {
 	for _, key := range keys {
@@ -290,7 +324,7 @@ func (s *Service) doStream(method, url string, headers http.Header, body []byte)
 	return opened.StatusCode, errors.New("stream chunk limit exceeded")
 }
 func headersFor(account Account) http.Header {
-	h := http.Header{"Accept": {"application/json"}, "Authorization": {"Bearer " + account.AccessToken}, "User-Agent": {"CLIProxyAPI-Codex-Quota-Activation-Plugin/1.0.0 (" + runtime.GOOS + "; " + runtime.GOARCH + ")"}}
+	h := http.Header{"Accept": {"application/json"}, "Authorization": {"Bearer " + account.AccessToken}, "User-Agent": {"CLIProxyAPI-Codex-Quota-Activation-Plugin/1.0.1 (" + runtime.GOOS + "; " + runtime.GOARCH + ")"}}
 	h.Set("Chatgpt-Account-Id", account.AccountID)
 	return h
 }
