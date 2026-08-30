@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.7 - 2026-08-30
+
+- Accept the observed Codex window aliases while rejecting conflicting aliases.
+- Treat token counters as optional when all are absent and reject partial or inconsistent accounting.
+- Report bounded field-level reasons for unknown windows without exposing upstream payloads.
+
 ## 1.0.6 - 2026-08-30
 
 - Accept both the current core `HTTPResponse` wire shape and canonical snake_case callback fields.

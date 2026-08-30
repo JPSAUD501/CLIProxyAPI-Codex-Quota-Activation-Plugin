@@ -21,6 +21,46 @@ func TestFreshWindowEligible(t *testing.T) {
 		t.Fatalf("%#v %v", s, err)
 	}
 }
+
+func TestFreshWindowWithoutTokenCountersIsEligible(t *testing.T) {
+	now := time.Unix(1000, 0)
+	s, err := ParseSnapshot([]byte(`{"rateLimit":{"primaryWindow":{"usedPercent":0,"resetAt":4600,"resetAfterSeconds":3600,"limitWindowSeconds":3600},"secondaryWindow":null}}`), "a", now)
+	if err != nil || !s.Eligible || s.Primary.TokenAccounting || s.Secondary.Presence != Absent {
+		t.Fatalf("%#v %v", s, err)
+	}
+}
+
+func TestPartialTokenAccountingIsUnknownAndClosed(t *testing.T) {
+	now := time.Unix(1000, 0)
+	s, err := ParseSnapshot([]byte(`{"rate_limit":{"primary_window":{"used_percent":0,"reset_at":4600,"reset_after_seconds":3600,"limit_window_seconds":3600,"used_tokens":0},"secondary_window":null}}`), "a", now)
+	if err != nil || s.Eligible || s.Primary.Presence != Unknown || s.Reason != "primary_window_partial_token_accounting" {
+		t.Fatalf("%#v %v", s, err)
+	}
+}
+
+func TestConflictingAliasesAreUnknownAndClosed(t *testing.T) {
+	now := time.Unix(1000, 0)
+	s, err := ParseSnapshot([]byte(`{"rate_limit":{"primary_window":{"used_percent":0,"usedPercent":1,"reset_at":4600,"reset_after_seconds":3600,"limit_window_seconds":3600},"secondary_window":null}}`), "a", now)
+	if err != nil || s.Eligible || s.Primary.Presence != Unknown || s.Reason != "primary_window_missing_or_invalid_used_percent" {
+		t.Fatalf("%#v %v", s, err)
+	}
+}
+
+func TestConsistentOptionalTokenAccountingIsAccepted(t *testing.T) {
+	now := time.Unix(1000, 0)
+	s, err := ParseSnapshot([]byte(`{"rate_limit":{"primary_window":{"used_percent":0,"reset_at":4600,"reset_after_seconds":3600,"limit_window_seconds":3600,"used_tokens":0,"remaining_tokens":100,"limit_tokens":100},"secondary_window":null}}`), "a", now)
+	if err != nil || !s.Eligible || !s.Primary.TokenAccounting {
+		t.Fatalf("%#v %v", s, err)
+	}
+}
+
+func TestConflictingOptionalTokenAccountingIsNotEligible(t *testing.T) {
+	now := time.Unix(1000, 0)
+	s, err := ParseSnapshot([]byte(`{"rate_limit":{"primary_window":{"used_percent":0,"reset_at":4600,"reset_after_seconds":3600,"limit_window_seconds":3600,"used_tokens":0,"remaining_tokens":90,"limit_tokens":100},"secondary_window":null}}`), "a", now)
+	if err != nil || s.Eligible || s.Reason != "conflicting_token_accounting" {
+		t.Fatalf("%#v %v", s, err)
+	}
+}
 func TestMissingWindowIsUnknownAndClosed(t *testing.T) {
 	s, err := ParseSnapshot([]byte(`{"rate_limit":{"secondary_window":null}}`), "a", time.Now())
 	if err != nil || s.Eligible || s.Primary.Presence != Unknown {
