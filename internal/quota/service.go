@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const usageURL = "https://chatgpt.com/backend-api/wham/usage"
@@ -577,6 +578,49 @@ func probeFailureReason(status int, err error) string {
 		}
 	}
 	return "probe_failed_network"
+}
+
+func sanitizeTransportDiagnostic(err error) string {
+	if err == nil {
+		return ""
+	}
+	words := strings.FieldsFunc(err.Error(), unicode.IsSpace)
+	redactNext := false
+	for index, word := range words {
+		if redactNext {
+			words[index] = "[redacted]"
+			redactNext = false
+			continue
+		}
+		lower := strings.ToLower(word)
+		switch {
+		case strings.Contains(lower, "http://") || strings.Contains(lower, "https://"):
+			words[index] = "[url]"
+		case strings.HasPrefix(lower, "bearer"):
+			words[index] = "[redacted]"
+			redactNext = true
+		case strings.Count(word, ".") >= 2 && len(word) >= 32:
+			words[index] = "[redacted]"
+		case strings.Contains(word, "@"):
+			words[index] = "[redacted]"
+		case len(word) >= 32 && isOpaqueDiagnosticWord(word):
+			words[index] = "[redacted]"
+		}
+	}
+	diagnostic := strings.Join(words, " ")
+	if len(diagnostic) > 240 {
+		diagnostic = diagnostic[:240]
+	}
+	return diagnostic
+}
+
+func isOpaqueDiagnosticWord(word string) bool {
+	for _, character := range word {
+		if !unicode.IsLetter(character) && !unicode.IsDigit(character) && !strings.ContainsRune("-_=./", character) {
+			return false
+		}
+	}
+	return true
 }
 func (s *Service) setScan(err error) {
 	s.mu.Lock()

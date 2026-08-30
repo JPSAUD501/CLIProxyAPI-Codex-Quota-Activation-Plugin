@@ -18,6 +18,7 @@ func (s *Service) Registration() pluginapi.ManagementRegistrationResponse {
 type safeAccount struct {
 	Key, ID, AuthIndex, Label, Plan string
 	Snapshot                        Snapshot
+	Diagnostic                      string `json:"diagnostic,omitempty"`
 }
 
 func (s *Service) Management(req pluginapi.ManagementRequest, hostCallbackID string) (pluginapi.ManagementResponse, error) {
@@ -64,10 +65,12 @@ func (s *Service) Management(req pluginapi.ManagementRequest, hostCallbackID str
 		safe := []safeAccount{}
 		for _, account := range accounts {
 			snapshot, status, probeErr := s.probe(account, hostCallbackID)
+			diagnostic := ""
 			if probeErr != nil {
 				snapshot.Reason = probeFailureReason(status, probeErr)
+				diagnostic = sanitizeTransportDiagnostic(probeErr)
 			}
-			safe = append(safe, safeAccount{account.Key, account.ID, account.AuthIndex, account.Label, account.Plan, snapshot})
+			safe = append(safe, safeAccount{Key: account.Key, ID: account.ID, AuthIndex: account.AuthIndex, Label: account.Label, Plan: account.Plan, Snapshot: snapshot, Diagnostic: diagnostic})
 		}
 		return qjson(headers, 200, map[string]any{"data": safe})
 	case strings.HasSuffix(req.Path, "/scan"):
