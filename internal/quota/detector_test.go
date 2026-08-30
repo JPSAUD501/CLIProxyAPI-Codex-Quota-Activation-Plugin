@@ -101,6 +101,26 @@ func TestProbeForwardsManagementHostCallbackID(t *testing.T) {
 	}
 }
 
+func TestHostHTTPResponseAcceptsCoreAndCanonicalWireFormats(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "current core", raw: `{"StatusCode":200,"Headers":{"Content-Type":["application/json"]},"Body":"e30="}`},
+		{name: "canonical rpc", raw: `{"status_code":200,"headers":{"Content-Type":["application/json"]},"body":"e30="}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var response hostHTTPResponse
+			if err := json.Unmarshal([]byte(test.raw), &response); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			if response.StatusCode != http.StatusOK || response.Headers.Get("Content-Type") != "application/json" || string(response.Body) != `{}` {
+				t.Fatalf("response = %#v", response)
+			}
+		})
+	}
+}
+
 func TestTransportDiagnosticRedactsSensitiveValues(t *testing.T) {
 	diagnostic := sanitizeTransportDiagnostic(errors.New("Get https://chatgpt.com/path?token=secret: bearer abc.def.ghi user@example.com opaque012345678901234567890123456789"))
 	for _, sensitive := range []string{"chatgpt.com", "secret", "abc.def.ghi", "user@example.com", "opaque012345678901234567890123456789"} {

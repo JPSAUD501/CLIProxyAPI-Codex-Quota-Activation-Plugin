@@ -7,8 +7,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const pluginVersion = "1.0.5"
-
 var pluginService = quota.New(callHost)
 
 type lifecycleRequest struct {
@@ -68,7 +66,7 @@ func dispatch(method string, request []byte) (any, error) {
 	}
 }
 func pluginRegistration() registration {
-	r := registration{SchemaVersion: pluginabi.SchemaVersion, Metadata: pluginapi.Metadata{Name: "Codex Quota Activation", Version: pluginVersion, Author: "JPSAUD501", GitHubRepository: "https://github.com/JPSAUD501/CLIProxyAPI-Codex-Quota-Activation-Plugin", ConfigFields: []pluginapi.ConfigField{{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable Codex quota inspection."}, {Name: "auto_activate", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Automatically activate fresh eligible cycles."}, {Name: "scan_interval", Type: pluginapi.ConfigFieldTypeString, Description: "Automatic scan interval."}, {Name: "max_concurrency", Type: pluginapi.ConfigFieldTypeInteger, Description: "Global activation concurrency; v1 requires 1."}, {Name: "activation_model_mode", Type: pluginapi.ConfigFieldTypeString, Description: "Automatic model selection mode."}, {Name: "activation_model_override", Type: pluginapi.ConfigFieldTypeString, Description: "Optional recovery override."}}}}
+	r := registration{SchemaVersion: pluginabi.SchemaVersion, Metadata: pluginapi.Metadata{Name: "Codex Quota Activation", Version: quota.Version, Author: "JPSAUD501", GitHubRepository: "https://github.com/JPSAUD501/CLIProxyAPI-Codex-Quota-Activation-Plugin", ConfigFields: []pluginapi.ConfigField{{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable Codex quota inspection."}, {Name: "auto_activate", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Automatically activate fresh eligible cycles."}, {Name: "scan_interval", Type: pluginapi.ConfigFieldTypeString, Description: "Automatic scan interval."}, {Name: "max_concurrency", Type: pluginapi.ConfigFieldTypeInteger, Description: "Global activation concurrency; v1 requires 1."}, {Name: "activation_model_mode", Type: pluginapi.ConfigFieldTypeString, Description: "Automatic model selection mode."}, {Name: "activation_model_override", Type: pluginapi.ConfigFieldTypeString, Description: "Optional recovery override."}}}}
 	r.Capabilities.ManagementAPI = true
 	return r
 }

@@ -28,6 +28,7 @@ const usageURL = "https://chatgpt.com/backend-api/wham/usage"
 const activationURL = "https://chatgpt.com/backend-api/codex/responses/compact"
 const modelCatalogURL = "https://raw.githubusercontent.com/router-for-me/models/refs/heads/main/models.json"
 const priceCatalogURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+const Version = "1.0.6"
 
 type HostCaller func(method string, payload any) (json.RawMessage, error)
 type Duration time.Duration
@@ -277,6 +278,39 @@ type hostHTTPResponse struct {
 	Headers    http.Header `json:"headers"`
 	Body       []byte      `json:"body"`
 }
+
+// UnmarshalJSON accepts both the current core callback shape (Go field names)
+// and the canonical snake_case RPC shape used by the streaming callback. The
+// host's pluginapi.HTTPResponse intentionally has no JSON tags today, while the
+// streaming response does; keeping this compatibility at the plugin boundary
+// avoids coupling quota logic to that serialization detail.
+func (r *hostHTTPResponse) UnmarshalJSON(raw []byte) error {
+	var wire struct {
+		CoreStatusCode      int         `json:"StatusCode"`
+		CanonicalStatusCode int         `json:"status_code"`
+		CoreHeaders         http.Header `json:"Headers"`
+		CanonicalHeaders    http.Header `json:"headers"`
+		CoreBody            []byte      `json:"Body"`
+		CanonicalBody       []byte      `json:"body"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return err
+	}
+	r.StatusCode = wire.CoreStatusCode
+	if r.StatusCode == 0 {
+		r.StatusCode = wire.CanonicalStatusCode
+	}
+	r.Headers = wire.CoreHeaders
+	if r.Headers == nil {
+		r.Headers = wire.CanonicalHeaders
+	}
+	r.Body = wire.CoreBody
+	if r.Body == nil {
+		r.Body = wire.CanonicalBody
+	}
+	return nil
+}
+
 type hostHTTPStreamResponse struct {
 	StatusCode int         `json:"status_code"`
 	Headers    http.Header `json:"headers"`
@@ -330,7 +364,7 @@ func headersFor(account Account) http.Header {
 		"Accept":        {"application/json"},
 		"Authorization": {"Bearer " + account.AccessToken},
 		"Content-Type":  {"application/json"},
-		"User-Agent":    {"CLIProxyAPI-Codex-Quota-Activation-Plugin/1.0.2 (" + runtime.GOOS + "; " + runtime.GOARCH + ")"},
+		"User-Agent":    {"CLIProxyAPI-Codex-Quota-Activation-Plugin/" + Version + " (" + runtime.GOOS + "; " + runtime.GOARCH + ")"},
 	}
 	h.Set("OpenAI-Beta", "codex-1")
 	h.Set("Chatgpt-Account-Id", account.AccountID)
