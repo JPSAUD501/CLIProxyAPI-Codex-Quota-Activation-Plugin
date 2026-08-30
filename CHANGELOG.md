@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5 - 2026-08-30
+
+- Add a bounded, redacted management diagnostic for otherwise unknown quota transport failures.
+
 ## 1.0.4 - 2026-08-30
 
 - Forward the official management `host_callback_id` through quota probes, catalog reads and activation streams.

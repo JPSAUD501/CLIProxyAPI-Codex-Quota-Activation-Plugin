@@ -100,3 +100,12 @@ func TestProbeForwardsManagementHostCallbackID(t *testing.T) {
 		t.Fatalf("probe status=%d err=%v", status, err)
 	}
 }
+
+func TestTransportDiagnosticRedactsSensitiveValues(t *testing.T) {
+	diagnostic := sanitizeTransportDiagnostic(errors.New("Get https://chatgpt.com/path?token=secret: bearer abc.def.ghi user@example.com opaque012345678901234567890123456789"))
+	for _, sensitive := range []string{"chatgpt.com", "secret", "abc.def.ghi", "user@example.com", "opaque012345678901234567890123456789"} {
+		if strings.Contains(diagnostic, sensitive) {
+			t.Fatalf("diagnostic leaked %q: %q", sensitive, diagnostic)
+		}
+	}
+}
