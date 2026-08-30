@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.6 - 2026-08-30
+
+- Accept both the current core `HTTPResponse` wire shape and canonical snake_case callback fields.
+- Keep the advertised plugin version and upstream user agent sourced from one constant.
+
 ## 1.0.5 - 2026-08-30
 
 - Add a bounded, redacted management diagnostic for otherwise unknown quota transport failures.
