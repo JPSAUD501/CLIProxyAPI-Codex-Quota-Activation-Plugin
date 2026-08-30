@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.4 - 2026-08-30
+
+- Forward the official management `host_callback_id` through quota probes, catalog reads and activation streams.
+
 ## 1.0.3 - 2026-08-30
 
 - Classify quota probe transport failures into bounded, non-sensitive diagnostic codes.

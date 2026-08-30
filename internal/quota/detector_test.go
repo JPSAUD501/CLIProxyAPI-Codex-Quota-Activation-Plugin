@@ -2,6 +2,7 @@ package quota
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -80,5 +82,21 @@ func TestProbeFailureReasonIsDiagnosticWithoutLeakingTheError(t *testing.T) {
 		if strings.Contains(got, "secret") {
 			t.Fatal("diagnostic reason leaked the original error")
 		}
+	}
+}
+
+func TestProbeForwardsManagementHostCallbackID(t *testing.T) {
+	service := New(func(method string, payload any) (json.RawMessage, error) {
+		if method != pluginabi.MethodHostHTTPDo {
+			t.Fatalf("host method = %q", method)
+		}
+		request, ok := payload.(hostHTTPRequest)
+		if !ok || request.HostCallbackID != "callback-1" {
+			t.Fatalf("host request = %#v", payload)
+		}
+		return json.Marshal(hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"rate_limit":{"primary_window":{"used_percent":0,"reset_at":4600,"reset_after_seconds":3600,"limit_window_seconds":3600,"used_tokens":0,"remaining_tokens":100,"limit_tokens":100},"secondary_window":null}}`)})
+	})
+	if _, status, err := service.probe(Account{AccessToken: "secret", AccountID: "acct"}, "callback-1"); err != nil || status != http.StatusOK {
+		t.Fatalf("probe status=%d err=%v", status, err)
 	}
 }

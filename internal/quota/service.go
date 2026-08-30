@@ -134,7 +134,7 @@ func (s *Service) scheduler() {
 		cfg := s.cfg
 		s.mu.RUnlock()
 		if cfg.Enabled && cfg.AutoActivate {
-			_, _ = s.Scan(context.Background(), "auto", nil, true)
+			_, _ = s.Scan(context.Background(), "auto", nil, true, "")
 		}
 		timer.Reset(time.Duration(cfg.ScanInterval))
 		select {
@@ -287,8 +287,8 @@ type hostHTTPStreamChunk struct {
 	Error   string `json:"error"`
 }
 
-func (s *Service) do(method, url string, headers http.Header, body []byte) (hostHTTPResponse, error) {
-	raw, err := s.call(pluginabi.MethodHostHTTPDo, hostHTTPRequest{Method: method, URL: url, Headers: headers, Body: body})
+func (s *Service) do(method, url string, headers http.Header, body []byte, hostCallbackID string) (hostHTTPResponse, error) {
+	raw, err := s.call(pluginabi.MethodHostHTTPDo, hostHTTPRequest{HostCallbackID: hostCallbackID, Method: method, URL: url, Headers: headers, Body: body})
 	if err != nil {
 		return hostHTTPResponse{}, err
 	}
@@ -296,8 +296,8 @@ func (s *Service) do(method, url string, headers http.Header, body []byte) (host
 	err = json.Unmarshal(raw, &resp)
 	return resp, err
 }
-func (s *Service) doStream(method, url string, headers http.Header, body []byte) (int, error) {
-	raw, err := s.call(pluginabi.MethodHostHTTPDoStream, hostHTTPRequest{Method: method, URL: url, Headers: headers, Body: body})
+func (s *Service) doStream(method, url string, headers http.Header, body []byte, hostCallbackID string) (int, error) {
+	raw, err := s.call(pluginabi.MethodHostHTTPDoStream, hostHTTPRequest{HostCallbackID: hostCallbackID, Method: method, URL: url, Headers: headers, Body: body})
 	if err != nil {
 		return 0, err
 	}
@@ -335,8 +335,8 @@ func headersFor(account Account) http.Header {
 	h.Set("Chatgpt-Account-Id", account.AccountID)
 	return h
 }
-func (s *Service) probe(account Account) (Snapshot, int, error) {
-	resp, err := s.do(http.MethodGet, usageURL, headersFor(account), nil)
+func (s *Service) probe(account Account, hostCallbackID string) (Snapshot, int, error) {
+	resp, err := s.do(http.MethodGet, usageURL, headersFor(account), nil, hostCallbackID)
 	if err != nil {
 		return Snapshot{}, 0, err
 	}
@@ -346,18 +346,18 @@ func (s *Service) probe(account Account) (Snapshot, int, error) {
 	snapshot, err := ParseSnapshot(resp.Body, account.Key, time.Now())
 	return snapshot, resp.StatusCode, err
 }
-func (s *Service) selectModel(account Account) (string, error) {
+func (s *Service) selectModel(account Account, hostCallbackID string) (string, error) {
 	s.mu.RLock()
 	override := strings.TrimSpace(s.cfg.ActivationModelOverride)
 	s.mu.RUnlock()
 	if override != "" {
 		return override, nil
 	}
-	catalogResp, err := s.do(http.MethodGet, modelCatalogURL, http.Header{"Accept": {"application/json"}}, nil)
+	catalogResp, err := s.do(http.MethodGet, modelCatalogURL, http.Header{"Accept": {"application/json"}}, nil, hostCallbackID)
 	if err != nil || catalogResp.StatusCode != 200 {
 		return "", errors.New("model catalog unavailable")
 	}
-	priceResp, err := s.do(http.MethodGet, priceCatalogURL, http.Header{"Accept": {"application/json"}}, nil)
+	priceResp, err := s.do(http.MethodGet, priceCatalogURL, http.Header{"Accept": {"application/json"}}, nil, hostCallbackID)
 	if err != nil || priceResp.StatusCode != 200 {
 		return "", errors.New("price catalog unavailable")
 	}
@@ -414,14 +414,14 @@ func (s *Service) selectModel(account Account) (string, error) {
 	})
 	return choices[0].id, nil
 }
-func (s *Service) activate(account Account, model string) (int, string, error) {
+func (s *Service) activate(account Account, model, hostCallbackID string) (int, string, error) {
 	body, _ := json.Marshal(map[string]any{"model": model, "instructions": "Reply briefly.", "input": []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "hi"}}}}, "store": false, "stream": true})
 	h := headersFor(account)
 	h.Set("Accept", "text/event-stream")
 	h.Set("Content-Type", "application/json")
 	h.Set("OpenAI-Beta", "responses=v1")
 	h.Set("Originator", "cliproxyapi_codex_quota_activation_plugin")
-	status, err := s.doStream(http.MethodPost, activationURL, h, body)
+	status, err := s.doStream(http.MethodPost, activationURL, h, body, hostCallbackID)
 	if err != nil {
 		return status, "network", err
 	}
@@ -430,7 +430,7 @@ func (s *Service) activate(account Account, model string) (int, string, error) {
 	}
 	return status, "", nil
 }
-func (s *Service) Scan(ctx context.Context, mode string, selected []string, activate bool) (RunRow, error) {
+func (s *Service) Scan(ctx context.Context, mode string, selected []string, activate bool, hostCallbackID string) (RunRow, error) {
 	s.scanMu.Lock()
 	defer s.scanMu.Unlock()
 	started := time.Now().UTC()
@@ -459,7 +459,7 @@ func (s *Service) Scan(ctx context.Context, mode string, selected []string, acti
 			run.Skipped++
 			continue
 		}
-		snapshot, status, err := s.probe(account)
+		snapshot, status, err := s.probe(account, hostCallbackID)
 		if err != nil {
 			_ = store.SetBackoff(ctx, account.Key, time.Now().Add(backoffDuration(status)))
 			run.Failed++
@@ -480,7 +480,7 @@ func (s *Service) Scan(ctx context.Context, mode string, selected []string, acti
 		if !activate {
 			continue
 		}
-		model, err := s.selectModel(account)
+		model, err := s.selectModel(account, hostCallbackID)
 		if err != nil {
 			run.Skipped++
 			continue
@@ -494,7 +494,7 @@ func (s *Service) Scan(ctx context.Context, mode string, selected []string, acti
 			run.Skipped++
 			continue
 		}
-		status, code, sendErr := s.activate(account, model)
+		status, code, sendErr := s.activate(account, model, hostCallbackID)
 		if sendErr != nil {
 			_ = store.SetBackoff(ctx, account.Key, time.Now().Add(backoffDuration(status)))
 			state := "failed_before_send"
@@ -509,7 +509,7 @@ func (s *Service) Scan(ctx context.Context, mode string, selected []string, acti
 			}
 			continue
 		}
-		after, _, probeErr := s.probe(account)
+		after, _, probeErr := s.probe(account, hostCallbackID)
 		if probeErr != nil {
 			_ = store.SetCycle(ctx, account.Key, snapshot.CycleID, "sent_unknown", status, "verify_failed")
 			run.Partial++
