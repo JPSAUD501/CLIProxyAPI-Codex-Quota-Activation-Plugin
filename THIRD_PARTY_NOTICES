@@ -1,0 +1,7 @@
+CLIProxyAPI Codex Quota Activation Plugin includes or studies MIT-licensed software.
+
+- CLIProxyAPI, Copyright router-for-me contributors, MIT.
+- quota-activation, Copyright Cody292 contributors, MIT, studied for quota-state behavior.
+- codex-token-usage, Copyright zhumengling contributors, MIT, studied for auth payload compatibility.
+
+No undocumented endpoint is represented as an official OpenAI API. Dependency license details are available in the release SBOM.

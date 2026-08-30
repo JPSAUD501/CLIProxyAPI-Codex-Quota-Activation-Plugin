@@ -1,0 +1,7 @@
+/package/
+/ui/node_modules/
+/ui/dist/
+*.dll
+*.so
+*.h
+*.db*

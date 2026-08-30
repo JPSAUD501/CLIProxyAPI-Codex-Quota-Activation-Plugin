@@ -1,0 +1,95 @@
+name: release
+on:
+  push: { branches: [main], tags: ["v*"] }
+  pull_request: { branches: [main] }
+permissions: { contents: read }
+jobs:
+  test:
+    strategy: { matrix: { os: [windows-latest, ubuntu-latest] } }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, cache: true }
+      - uses: actions/setup-node@v6
+        with: { node-version: 24, cache: npm, cache-dependency-path: ui/package-lock.json }
+      - run: npm ci
+        working-directory: ui
+      - run: npm run build
+        working-directory: ui
+      - run: npm run typecheck
+        working-directory: ui
+      - run: go test -race ./...
+      - run: go vet ./...
+      - name: Secret scan
+        shell: pwsh
+        run: |
+          $patterns = @('sk-[A-Za-z0-9_-]{30,}','refresh[_-]?token\s*[=:]','authorization\s*:\s*bearer\s+[A-Za-z0-9._-]{20,}')
+          $hits = git ls-files | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Select-String -LiteralPath $_ -Pattern $patterns }
+          if ($hits) { $hits | ForEach-Object { "{0}:{1}" -f $_.Path,$_.LineNumber }; throw 'Potential secret found' }
+  windows-amd64:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, cache: true }
+      - name: Build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory package | Out-Null
+          $env:CGO_ENABLED='1'; $env:GOOS='windows'; $env:GOARCH='amd64'
+          go build -trimpath -buildmode=c-shared -o package/codex-quota-activation.dll ./cmd/codex-quota-activation-plugin
+          Copy-Item registry.json package/registry.json
+          Compress-Archive package/* codex-quota-activation-windows-amd64.zip
+      - uses: anchore/sbom-action@v0
+        with: { path: package, format: spdx-json, output-file: codex-quota-activation-windows-amd64.spdx.json }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: codex-quota-activation-windows-amd64
+          path: |
+            codex-quota-activation-windows-amd64.zip
+            codex-quota-activation-windows-amd64.spdx.json
+  linux:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - { arch: amd64, cc: gcc }
+          - { arch: arm64, cc: aarch64-linux-gnu-gcc }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, cache: true }
+      - if: matrix.arch == 'arm64'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build
+        env: { GOOS: linux, GOARCH: "${{ matrix.arch }}", CGO_ENABLED: "1", CC: "${{ matrix.cc }}" }
+        run: |
+          mkdir package
+          go build -trimpath -buildmode=c-shared -o package/codex-quota-activation.so ./cmd/codex-quota-activation-plugin
+          cp registry.json package/registry.json
+          sha256sum package/codex-quota-activation.so | sed 's#package/##' > package/codex-quota-activation.so.sha256
+          tar -C package -czf "codex-quota-activation-linux-${GOARCH}.tar.gz" codex-quota-activation.so codex-quota-activation.h codex-quota-activation.so.sha256 registry.json
+      - uses: anchore/sbom-action@v0
+        with: { path: package, format: spdx-json, output-file: "codex-quota-activation-linux-${{ matrix.arch }}.spdx.json" }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: codex-quota-activation-linux-${{ matrix.arch }}
+          path: |
+            codex-quota-activation-linux-${{ matrix.arch }}.tar.gz
+            codex-quota-activation-linux-${{ matrix.arch }}.spdx.json
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows-amd64, linux]
+    runs-on: ubuntu-latest
+    permissions: { contents: write, id-token: write, attestations: write }
+    steps:
+      - uses: actions/download-artifact@v7
+        with: { pattern: codex-quota-activation-*, path: dist, merge-multiple: true }
+      - run: cd dist && sha256sum * > checksums.txt
+      - uses: actions/attest-build-provenance@v3
+        with: { subject-path: "dist/*" }
+      - env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "Codex Quota Activation $GITHUB_REF_NAME" --generate-notes
