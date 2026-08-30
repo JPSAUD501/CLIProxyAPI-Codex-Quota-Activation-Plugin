@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -540,6 +541,42 @@ func backoffDuration(status int) time.Duration {
 	default:
 		return 5 * time.Minute
 	}
+}
+
+func probeFailureReason(status int, err error) string {
+	if status > 0 {
+		return "probe_failed_http_" + strconv.Itoa(status)
+	}
+	if err == nil {
+		return "probe_failed_network"
+	}
+	message := strings.ToLower(err.Error())
+	classifications := []struct {
+		contains string
+		reason   string
+	}{
+		{"context deadline exceeded", "probe_failed_timeout"},
+		{"timeout", "probe_failed_timeout"},
+		{"context canceled", "probe_failed_context_canceled"},
+		{"x509", "probe_failed_tls"},
+		{"tls", "probe_failed_tls"},
+		{"no such host", "probe_failed_dns"},
+		{"lookup ", "probe_failed_dns"},
+		{"proxyconnect", "probe_failed_proxy"},
+		{"proxy", "probe_failed_proxy"},
+		{"connection refused", "probe_failed_connection_refused"},
+		{"connection reset", "probe_failed_connection_reset"},
+		{"unexpected eof", "probe_failed_upstream_eof"},
+		{"eof", "probe_failed_upstream_eof"},
+		{"host callback", "probe_failed_host_bridge"},
+		{"unsupported protocol scheme", "probe_failed_invalid_request"},
+	}
+	for _, classification := range classifications {
+		if strings.Contains(message, classification.contains) {
+			return classification.reason
+		}
+	}
+	return "probe_failed_network"
 }
 func (s *Service) setScan(err error) {
 	s.mu.Lock()

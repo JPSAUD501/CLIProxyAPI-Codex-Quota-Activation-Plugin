@@ -2,6 +2,8 @@ package quota
 
 import (
 	"encoding/base64"
+	"errors"
+	"net/http"
 	"runtime"
 	"strings"
 	"testing"
@@ -56,5 +58,27 @@ func TestQuotaHeadersUseProtocolBetaAndHonestPlatformIdentity(t *testing.T) {
 	userAgent := headers.Get("User-Agent")
 	if !strings.Contains(userAgent, runtime.GOOS) || !strings.Contains(userAgent, runtime.GOARCH) {
 		t.Fatalf("user agent does not identify the real platform: %q", userAgent)
+	}
+}
+
+func TestProbeFailureReasonIsDiagnosticWithoutLeakingTheError(t *testing.T) {
+	tests := []struct {
+		status int
+		err    error
+		want   string
+	}{
+		{status: http.StatusUnauthorized, err: errors.New("sensitive upstream body"), want: "probe_failed_http_401"},
+		{err: errors.New("execute request: context deadline exceeded: token=secret"), want: "probe_failed_timeout"},
+		{err: errors.New("execute request: remote error: tls: token=secret"), want: "probe_failed_tls"},
+		{err: errors.New("execute request: unexpected EOF: token=secret"), want: "probe_failed_upstream_eof"},
+	}
+	for _, test := range tests {
+		got := probeFailureReason(test.status, test.err)
+		if got != test.want {
+			t.Fatalf("probeFailureReason(%d, err) = %q, want %q", test.status, got, test.want)
+		}
+		if strings.Contains(got, "secret") {
+			t.Fatal("diagnostic reason leaked the original error")
+		}
 	}
 }

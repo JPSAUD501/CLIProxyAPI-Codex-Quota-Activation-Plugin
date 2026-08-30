@@ -6,7 +6,6 @@ import (
 	"errors"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -66,11 +65,7 @@ func (s *Service) Management(req pluginapi.ManagementRequest) (pluginapi.Managem
 		for _, account := range accounts {
 			snapshot, status, probeErr := s.probe(account)
 			if probeErr != nil {
-				if status > 0 {
-					snapshot.Reason = "probe_failed_http_" + strconv.Itoa(status)
-				} else {
-					snapshot.Reason = "probe_failed_network"
-				}
+				snapshot.Reason = probeFailureReason(status, probeErr)
 			}
 			safe = append(safe, safeAccount{account.Key, account.ID, account.AuthIndex, account.Label, account.Plan, snapshot})
 		}

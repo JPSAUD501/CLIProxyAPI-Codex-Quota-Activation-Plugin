@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.3 - 2026-08-30
+
+- Classify quota probe transport failures into bounded, non-sensitive diagnostic codes.
+
 ## 1.0.2 - 2026-08-30
 
 - Send the observed Codex quota protocol header while retaining honest plugin and platform identification.
