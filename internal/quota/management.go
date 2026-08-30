@@ -20,7 +20,7 @@ type safeAccount struct {
 	Snapshot                        Snapshot
 }
 
-func (s *Service) Management(req pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+func (s *Service) Management(req pluginapi.ManagementRequest, hostCallbackID string) (pluginapi.ManagementResponse, error) {
 	if strings.HasSuffix(req.Path, "/status.js") {
 		return pluginapi.ManagementResponse{StatusCode: 200, Headers: http.Header{"Content-Type": {"text/javascript; charset=utf-8"}, "Cache-Control": {"no-store"}, "X-Content-Type-Options": {"nosniff"}}, Body: StatusJS()}, nil
 	}
@@ -63,7 +63,7 @@ func (s *Service) Management(req pluginapi.ManagementRequest) (pluginapi.Managem
 		}
 		safe := []safeAccount{}
 		for _, account := range accounts {
-			snapshot, status, probeErr := s.probe(account)
+			snapshot, status, probeErr := s.probe(account, hostCallbackID)
 			if probeErr != nil {
 				snapshot.Reason = probeFailureReason(status, probeErr)
 			}
@@ -74,7 +74,7 @@ func (s *Service) Management(req pluginapi.ManagementRequest) (pluginapi.Managem
 		if req.Method != http.MethodPost {
 			return qjson(headers, 405, map[string]any{"error": "method_not_allowed"})
 		}
-		run, err := s.Scan(context.Background(), "manual_scan", nil, false)
+		run, err := s.Scan(context.Background(), "manual_scan", nil, false, hostCallbackID)
 		if err != nil {
 			return pluginapi.ManagementResponse{}, err
 		}
@@ -89,7 +89,7 @@ func (s *Service) Management(req pluginapi.ManagementRequest) (pluginapi.Managem
 		if len(req.Body) > 64*1024 || json.Unmarshal(req.Body, &body) != nil || len(body.Accounts) == 0 || len(body.Accounts) > 100 {
 			return qjson(headers, 400, map[string]any{"error": "invalid_accounts"})
 		}
-		run, err := s.Scan(context.Background(), "preview", body.Accounts, false)
+		run, err := s.Scan(context.Background(), "preview", body.Accounts, false, hostCallbackID)
 		if err != nil {
 			return pluginapi.ManagementResponse{}, err
 		}
@@ -122,7 +122,7 @@ func (s *Service) Management(req pluginapi.ManagementRequest) (pluginapi.Managem
 		accounts := append([]string(nil), confirmation.Accounts...)
 		delete(s.confirmations, hash)
 		s.mu.Unlock()
-		run, err := s.Scan(context.Background(), "manual_activation", accounts, true)
+		run, err := s.Scan(context.Background(), "manual_activation", accounts, true, hostCallbackID)
 		if err != nil {
 			return pluginapi.ManagementResponse{}, err
 		}

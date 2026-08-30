@@ -7,7 +7,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const pluginVersion = "1.0.3"
+const pluginVersion = "1.0.4"
 
 var pluginService = quota.New(callHost)
 
@@ -62,7 +62,7 @@ func dispatch(method string, request []byte) (any, error) {
 		if err := json.Unmarshal(request, &req); err != nil {
 			return nil, err
 		}
-		return pluginService.Management(req.ManagementRequest)
+		return pluginService.Management(req.ManagementRequest, req.HostCallbackID)
 	default:
 		return nil, stringError("unknown plugin method: " + method)
 	}
