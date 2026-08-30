@@ -324,7 +324,13 @@ func (s *Service) doStream(method, url string, headers http.Header, body []byte)
 	return opened.StatusCode, errors.New("stream chunk limit exceeded")
 }
 func headersFor(account Account) http.Header {
-	h := http.Header{"Accept": {"application/json"}, "Authorization": {"Bearer " + account.AccessToken}, "User-Agent": {"CLIProxyAPI-Codex-Quota-Activation-Plugin/1.0.1 (" + runtime.GOOS + "; " + runtime.GOARCH + ")"}}
+	h := http.Header{
+		"Accept":        {"application/json"},
+		"Authorization": {"Bearer " + account.AccessToken},
+		"Content-Type":  {"application/json"},
+		"User-Agent":    {"CLIProxyAPI-Codex-Quota-Activation-Plugin/1.0.2 (" + runtime.GOOS + "; " + runtime.GOARCH + ")"},
+	}
+	h.Set("OpenAI-Beta", "codex-1")
 	h.Set("Chatgpt-Account-Id", account.AccountID)
 	return h
 }
@@ -448,7 +454,7 @@ func (s *Service) Scan(ctx context.Context, mode string, selected []string, acti
 		if until, backoffErr := store.BackoffUntil(ctx, account.Key); backoffErr != nil {
 			run.Failed++
 			continue
-		} else if until.After(time.Now()) {
+		} else if mode == "auto" && until.After(time.Now()) {
 			run.Skipped++
 			continue
 		}

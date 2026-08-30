@@ -2,6 +2,8 @@ package quota
 
 import (
 	"encoding/base64"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,5 +45,16 @@ func TestParseAccountUsesCodexJWTClaims(t *testing.T) {
 	account, ok := parseAccount(pluginapi.HostAuthFileEntry{ID: "codex.json", AuthIndex: "index", Provider: "codex", Unavailable: true}, raw)
 	if !ok || account.AccountID != "acct-1" || account.Plan != "team" {
 		t.Fatalf("account=%#v ok=%v", account, ok)
+	}
+}
+
+func TestQuotaHeadersUseProtocolBetaAndHonestPlatformIdentity(t *testing.T) {
+	headers := headersFor(Account{AccessToken: "secret", AccountID: "acct"})
+	if headers.Get("OpenAI-Beta") != "codex-1" || headers.Get("Chatgpt-Account-Id") != "acct" {
+		t.Fatalf("missing observed quota protocol headers")
+	}
+	userAgent := headers.Get("User-Agent")
+	if !strings.Contains(userAgent, runtime.GOOS) || !strings.Contains(userAgent, runtime.GOARCH) {
+		t.Fatalf("user agent does not identify the real platform: %q", userAgent)
 	}
 }
