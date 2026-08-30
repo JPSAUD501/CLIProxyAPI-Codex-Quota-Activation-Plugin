@@ -7,7 +7,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const pluginVersion = "1.0.2"
+const pluginVersion = "1.0.3"
 
 var pluginService = quota.New(callHost)
 
