@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0 - 2026-08-30
+
+- Redesign the status page with quota rails, reset countdowns, scan history, and a compact T3-inspired layout.
+- Allow same-origin embedding in the CLIProxyAPI Management console while continuing to block third-party framing.
+
 ## 1.0.7 - 2026-08-30
 
 - Accept the observed Codex window aliases while rejecting conflicting aliases.

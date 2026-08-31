@@ -26,7 +26,7 @@ func (s *Service) Management(req pluginapi.ManagementRequest, hostCallbackID str
 		return pluginapi.ManagementResponse{StatusCode: 200, Headers: http.Header{"Content-Type": {"text/javascript; charset=utf-8"}, "Cache-Control": {"no-store"}, "X-Content-Type-Options": {"nosniff"}}, Body: StatusJS()}, nil
 	}
 	if strings.HasSuffix(req.Path, "/status") && strings.Contains(req.Path, "/resource/") {
-		return pluginapi.ManagementResponse{StatusCode: 200, Headers: http.Header{"Content-Type": {"text/html; charset=utf-8"}, "Cache-Control": {"no-store"}, "Content-Security-Policy": {"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"}}, Body: StatusHTML()}, nil
+		return pluginapi.ManagementResponse{StatusCode: 200, Headers: http.Header{"Content-Type": {"text/html; charset=utf-8"}, "Cache-Control": {"no-store"}, "Content-Security-Policy": {"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'"}}, Body: StatusHTML()}, nil
 	}
 	headers := http.Header{"Content-Type": {"application/json; charset=utf-8"}, "Cache-Control": {"no-store"}, "Content-Security-Policy": {"default-src 'none'; frame-ancestors 'none'"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
