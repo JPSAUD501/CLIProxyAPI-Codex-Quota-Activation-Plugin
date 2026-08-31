@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0 - 2026-08-30
+
+- Reuse the authenticated Management Center session when the dashboard is embedded.
+- Keep the bridged management key in memory only and reject cross-origin messages.
+- Retain direct-URL key entry as a protected standalone fallback.
+
 ## 1.1.0 - 2026-08-30
 
 - Redesign the status page with quota rails, reset countdowns, scan history, and a compact T3-inspired layout.

@@ -28,7 +28,7 @@ const usageURL = "https://chatgpt.com/backend-api/wham/usage"
 const activationURL = "https://chatgpt.com/backend-api/codex/responses/compact"
 const modelCatalogURL = "https://raw.githubusercontent.com/router-for-me/models/refs/heads/main/models.json"
 const priceCatalogURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 type HostCaller func(method string, payload any) (json.RawMessage, error)
 type Duration time.Duration
