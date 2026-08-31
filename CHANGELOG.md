@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0 - 2026-08-31
+
+- Resolve current `type: openai` Codex models by plan and use validated OpenRouter prices with SQLite and embedded fallbacks.
+- Send the minimal activation request to `/backend-api/codex/responses` with SSE, `stream=true`, and `store=false`.
+- Separate eligible, attempted, verified, partial, failed, and skipped outcomes. Technical selection failures no longer appear as skipped accounts.
+- Persist catalog snapshots and bounded per-account outcomes without response bodies, credentials, or authorization headers.
+- Expose activation readiness, catalog provenance, selected models, and the latest activation result through management APIs and the dashboard.
+
 ## 1.2.1 - 2026-08-30
 
 - Show the percentage and quota rail as remaining capacity instead of consumed capacity.

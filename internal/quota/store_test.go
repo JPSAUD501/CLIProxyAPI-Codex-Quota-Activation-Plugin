@@ -81,3 +81,52 @@ func TestBackoffPersists(t *testing.T) {
 		t.Fatalf("got=%v want=%v err=%v", got, want, err)
 	}
 }
+
+func TestFailedRetriableCanBeReservedAgainButUnknownCannot(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	ok, err := store.Reserve(ctx, "account", "cycle", "model")
+	if err != nil || !ok {
+		t.Fatalf("first reserve: ok=%v err=%v", ok, err)
+	}
+	if err := store.SetCycle(ctx, "account", "cycle", "failed_retriable", 429, "activation_rate_limited"); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = store.Reserve(ctx, "account", "cycle", "model")
+	if err != nil || !ok {
+		t.Fatalf("retry reserve: ok=%v err=%v", ok, err)
+	}
+	if err := store.SetCycle(ctx, "account", "cycle", "sent_unknown", 0, "activation_delivery_unknown"); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = store.Reserve(ctx, "account", "cycle", "model")
+	if err != nil || ok {
+		t.Fatalf("unknown was reserved: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestCatalogCacheSurvivesReopen(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetchedAt := time.Now().UTC().Truncate(time.Nanosecond)
+	if err := store.SaveCatalog(context.Background(), "catalog", []byte(`{"valid":true}`), "remote", fetchedAt); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.Close()
+	store, err = OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	raw, source, gotAt, err := store.LoadCatalog(context.Background(), "catalog")
+	if err != nil || string(raw) != `{"valid":true}` || source != "remote" || !gotAt.Equal(fetchedAt) {
+		t.Fatalf("raw=%s source=%s fetched=%v err=%v", raw, source, gotAt, err)
+	}
+}

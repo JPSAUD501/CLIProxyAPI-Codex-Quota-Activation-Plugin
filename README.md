@@ -6,10 +6,10 @@ Native CLIProxyAPI plugin for inspecting Codex subscription quota windows and ac
 
 ## Safety model
 
-- Codex OAuth credentials only; disabled, unavailable, malformed, and unknown-plan accounts are skipped.
-- A cycle is reserved transactionally before sending. `partial` and `sent_unknown` cycles are never retried automatically.
+- Codex OAuth credentials only. Disabled, malformed, and unknown-plan accounts are skipped. Accounts marked unavailable by the scheduler stay visible for quota inspection.
+- A cycle is reserved transactionally before sending. `reserved`, `verified`, `partial`, and `sent_unknown` cycles are never sent twice. Explicit `401`, `403`, and `429` responses use a per-account backoff before a new reservation.
 - Automatic activation starts 60 seconds after health and runs every 30 minutes with global concurrency 1.
-- Model selection requires a matching CLIProxyAPI plan catalog and LiteLLM price. An explicit override is available only for recovery.
+- Model selection combines the CLIProxyAPI plan catalog with public OpenRouter prices. It refreshes every 24 hours and falls back to the last valid SQLite cache, then to a versioned embedded snapshot.
 - Manual activation requires a one-use confirmation token that expires in ten minutes.
 - Credentials are held only for the upstream call and are never persisted or logged.
 
@@ -28,7 +28,7 @@ plugins:
       activation_model_override: ""
 ```
 
-Open `/v0/resource/plugins/codex-quota-activation/status` and enter the Management key.
+Open `/v0/resource/plugins/codex-quota-activation/status`. When embedded in the Management Center, the page reuses its authenticated same-origin session without displaying a second login form.
 
 ## Development
 

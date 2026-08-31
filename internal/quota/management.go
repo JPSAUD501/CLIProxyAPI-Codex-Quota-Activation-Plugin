@@ -2,6 +2,7 @@ package quota
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -18,7 +19,9 @@ func (s *Service) Registration() pluginapi.ManagementRegistrationResponse {
 type safeAccount struct {
 	Key, ID, AuthIndex, Label, Plan string
 	Snapshot                        Snapshot
-	Diagnostic                      string `json:"diagnostic,omitempty"`
+	Diagnostic                      string       `json:"diagnostic,omitempty"`
+	SelectedModel                   *ModelChoice `json:"selected_model,omitempty"`
+	LastOutcome                     *RunOutcome  `json:"last_outcome,omitempty"`
 }
 
 func (s *Service) Management(req pluginapi.ManagementRequest, hostCallbackID string) (pluginapi.ManagementResponse, error) {
@@ -40,14 +43,19 @@ func (s *Service) Management(req pluginapi.ManagementRequest, hostCallbackID str
 		if store == nil || store.Health(ctx) != nil {
 			return qjson(headers, 503, map[string]any{"status": "unhealthy"})
 		}
-		return qjson(headers, 200, map[string]any{"status": "healthy", "enabled": cfg.Enabled, "auto_activate": cfg.AutoActivate})
+		catalog := s.catalogStatus(ctx, hostCallbackID)
+		if !catalog.Ready {
+			return qjson(headers, 503, map[string]any{"status": "unhealthy", "enabled": cfg.Enabled, "auto_activate": cfg.AutoActivate, "activation_ready": false, "catalog": catalog})
+		}
+		return qjson(headers, 200, map[string]any{"status": "healthy", "enabled": cfg.Enabled, "auto_activate": cfg.AutoActivate, "activation_ready": true, "catalog": catalog})
 	case strings.HasSuffix(req.Path, "/status"):
 		s.mu.RLock()
 		cfg := s.cfg
 		last := s.lastScan
 		lastErr := s.lastError
 		s.mu.RUnlock()
-		return qjson(headers, 200, map[string]any{"enabled": cfg.Enabled, "auto_activate": cfg.AutoActivate, "scan_interval": cfg.ScanInterval.String(), "last_scan": last, "last_error": lastErr})
+		catalog := s.catalogStatus(ctx, hostCallbackID)
+		return qjson(headers, 200, map[string]any{"enabled": cfg.Enabled, "auto_activate": cfg.AutoActivate, "activation_ready": catalog.Ready, "scan_interval": cfg.ScanInterval.String(), "last_scan": last, "last_error": lastErr, "catalog": catalog})
 	case strings.HasSuffix(req.Path, "/runs"):
 		s.mu.RLock()
 		store := s.store
@@ -70,7 +78,18 @@ func (s *Service) Management(req pluginapi.ManagementRequest, hostCallbackID str
 				snapshot.Reason = probeFailureReason(status, probeErr)
 				diagnostic = sanitizeTransportDiagnostic(probeErr)
 			}
-			safe = append(safe, safeAccount{Key: account.Key, ID: account.ID, AuthIndex: account.AuthIndex, Label: account.Label, Plan: account.Plan, Snapshot: snapshot, Diagnostic: diagnostic})
+			choice, choiceErr := s.selectModel(ctx, account, hostCallbackID)
+			var selected *ModelChoice
+			if choiceErr == nil {
+				selected = &choice
+			}
+			var lastOutcome *RunOutcome
+			if outcome, outcomeErr := s.store.LastOutcome(ctx, account.Key); outcomeErr == nil {
+				lastOutcome = &outcome
+			} else if !errors.Is(outcomeErr, sql.ErrNoRows) {
+				diagnostic = "outcome_read_failed"
+			}
+			safe = append(safe, safeAccount{Key: account.Key, ID: account.ID, AuthIndex: account.AuthIndex, Label: account.Label, Plan: account.Plan, Snapshot: snapshot, Diagnostic: diagnostic, SelectedModel: selected, LastOutcome: lastOutcome})
 		}
 		return qjson(headers, 200, map[string]any{"data": safe})
 	case strings.HasSuffix(req.Path, "/scan"):
@@ -133,9 +152,17 @@ func (s *Service) Management(req pluginapi.ManagementRequest, hostCallbackID str
 	}
 	return qjson(headers, 404, map[string]any{"error": "not_found"})
 }
+
+func (s *Service) catalogStatus(ctx context.Context, hostCallbackID string) CatalogStatus {
+	s.mu.RLock()
+	resolver := s.resolver
+	s.mu.RUnlock()
+	if resolver == nil {
+		return CatalogStatus{ErrorCode: "model_catalog_unavailable", SelectedByPlan: map[string]ModelChoice{}}
+	}
+	return resolver.Status(ctx, hostCallbackID)
+}
 func qjson(headers http.Header, status int, value any) (pluginapi.ManagementResponse, error) {
 	raw, err := json.Marshal(value)
 	return pluginapi.ManagementResponse{StatusCode: status, Headers: headers, Body: raw}, err
 }
-
-var _ = errors.New

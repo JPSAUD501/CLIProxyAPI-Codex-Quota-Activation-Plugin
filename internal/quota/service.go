@@ -25,10 +25,8 @@ import (
 )
 
 const usageURL = "https://chatgpt.com/backend-api/wham/usage"
-const activationURL = "https://chatgpt.com/backend-api/codex/responses/compact"
-const modelCatalogURL = "https://raw.githubusercontent.com/router-for-me/models/refs/heads/main/models.json"
-const priceCatalogURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
-const Version = "1.2.1"
+const activationURL = "https://chatgpt.com/backend-api/codex/responses"
+const Version = "1.3.0"
 
 type HostCaller func(method string, payload any) (json.RawMessage, error)
 type Duration time.Duration
@@ -66,6 +64,7 @@ type Service struct {
 	mu            sync.RWMutex
 	cfg           Config
 	store         *Store
+	resolver      *ModelResolver
 	call          HostCaller
 	done          chan struct{}
 	scanMu        sync.Mutex
@@ -115,6 +114,7 @@ func (s *Service) Configure(raw []byte) error {
 			return err
 		}
 		s.store = store
+		s.resolver = NewModelResolver(s, store)
 	}
 	s.cfg = cfg
 	if !s.started {
@@ -381,73 +381,15 @@ func (s *Service) probe(account Account, hostCallbackID string) (Snapshot, int, 
 	snapshot, err := ParseSnapshot(resp.Body, account.Key, time.Now())
 	return snapshot, resp.StatusCode, err
 }
-func (s *Service) selectModel(account Account, hostCallbackID string) (string, error) {
+func (s *Service) selectModel(ctx context.Context, account Account, hostCallbackID string) (ModelChoice, error) {
 	s.mu.RLock()
 	override := strings.TrimSpace(s.cfg.ActivationModelOverride)
+	resolver := s.resolver
 	s.mu.RUnlock()
-	if override != "" {
-		return override, nil
+	if resolver == nil {
+		return ModelChoice{}, codedError("model_catalog_unavailable")
 	}
-	catalogResp, err := s.do(http.MethodGet, modelCatalogURL, http.Header{"Accept": {"application/json"}}, nil, hostCallbackID)
-	if err != nil || catalogResp.StatusCode != 200 {
-		return "", errors.New("model catalog unavailable")
-	}
-	priceResp, err := s.do(http.MethodGet, priceCatalogURL, http.Header{"Accept": {"application/json"}}, nil, hostCallbackID)
-	if err != nil || priceResp.StatusCode != 200 {
-		return "", errors.New("price catalog unavailable")
-	}
-	var catalog map[string][]struct {
-		ID                        string   `json:"id"`
-		Type                      string   `json:"type"`
-		SupportedOutputModalities []string `json:"supportedOutputModalities"`
-	}
-	if json.Unmarshal(catalogResp.Body, &catalog) != nil {
-		return "", errors.New("invalid model catalog")
-	}
-	section := "codex-" + account.Plan
-	if account.Plan == "business" {
-		section = "codex-team"
-	}
-	models := catalog[section]
-	if len(models) == 0 {
-		return "", errors.New("plan catalog unavailable")
-	}
-	var prices map[string]struct {
-		Input  float64 `json:"input_cost_per_token"`
-		Output float64 `json:"output_cost_per_token"`
-	}
-	if json.Unmarshal(priceResp.Body, &prices) != nil {
-		return "", errors.New("invalid price catalog")
-	}
-	type choice struct {
-		id    string
-		cost  float64
-		order int
-	}
-	choices := []choice{}
-	for i, m := range models {
-		if m.ID == "" || m.Type != "codex" {
-			continue
-		}
-		p, ok := prices[m.ID]
-		if !ok {
-			p, ok = prices["openai/"+m.ID]
-		}
-		if !ok || p.Input < 0 || p.Output < 0 {
-			continue
-		}
-		choices = append(choices, choice{m.ID, p.Input + p.Output, i})
-	}
-	if len(choices) == 0 {
-		return "", errors.New("no priced text model for plan")
-	}
-	sort.SliceStable(choices, func(i, j int) bool {
-		if choices[i].cost == choices[j].cost {
-			return choices[i].order < choices[j].order
-		}
-		return choices[i].cost < choices[j].cost
-	})
-	return choices[0].id, nil
+	return resolver.Resolve(ctx, account.Plan, override, hostCallbackID)
 }
 func (s *Service) activate(account Account, model, hostCallbackID string) (int, string, error) {
 	body, _ := json.Marshal(map[string]any{"model": model, "instructions": "Reply briefly.", "input": []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "hi"}}}}, "store": false, "stream": true})
@@ -489,55 +431,74 @@ func (s *Service) Scan(ctx context.Context, mode string, selected []string, acti
 		s.mu.RUnlock()
 		if until, backoffErr := store.BackoffUntil(ctx, account.Key); backoffErr != nil {
 			run.Failed++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "failed_before_send", ReasonCode: "backoff_read_failed"})
 			continue
-		} else if mode == "auto" && until.After(time.Now()) {
+		} else if activate && until.After(time.Now()) {
 			run.Skipped++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "skipped", ReasonCode: "backoff_active"})
 			continue
 		}
 		snapshot, status, err := s.probe(account, hostCallbackID)
 		if err != nil {
 			_ = store.SetBackoff(ctx, account.Key, time.Now().Add(backoffDuration(status)))
 			run.Failed++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "failed_before_send", ReasonCode: probeFailureReason(status, err)})
 			continue
 		}
 		snapshot, err = store.ResolveCycle(ctx, account.Key, snapshot)
 		if err != nil {
 			run.Failed++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "failed_before_send", ReasonCode: "cycle_resolution_failed"})
 			continue
 		}
 		account.Snapshot = snapshot
-		_ = store.Observe(ctx, account, snapshot)
+		if err := store.Observe(ctx, account, snapshot); err != nil {
+			run.Failed++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "failed_before_send", ReasonCode: "observation_persist_failed"})
+			continue
+		}
 		if !snapshot.Eligible {
 			run.Skipped++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "skipped", ReasonCode: snapshot.Reason})
 			continue
 		}
 		run.Eligible++
-		if !activate {
-			continue
-		}
-		model, err := s.selectModel(account, hostCallbackID)
-		if err != nil {
-			run.Skipped++
-			continue
-		}
-		reserved, err := store.Reserve(ctx, account.Key, snapshot.CycleID, model)
+		choice, err := s.selectModel(ctx, account, hostCallbackID)
 		if err != nil {
 			run.Failed++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "failed_before_send", ReasonCode: errorCode(err)})
+			continue
+		}
+		if !activate {
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "preview", Model: choice.Model, PriceNanoUSD: choice.CombinedNanoUSD, Source: choice.Source})
+			continue
+		}
+		reserved, err := store.Reserve(ctx, account.Key, snapshot.CycleID, choice.Model)
+		if err != nil {
+			run.Failed++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "failed_before_send", ReasonCode: "reservation_failed", Model: choice.Model, PriceNanoUSD: choice.CombinedNanoUSD, Source: choice.Source})
 			continue
 		}
 		if !reserved {
 			run.Skipped++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "skipped", ReasonCode: "cycle_already_reserved", Model: choice.Model, PriceNanoUSD: choice.CombinedNanoUSD, Source: choice.Source})
 			continue
 		}
-		status, code, sendErr := s.activate(account, model, hostCallbackID)
+		run.Attempted++
+		status, code, sendErr := s.activate(account, choice.Model, hostCallbackID)
 		if sendErr != nil {
-			_ = store.SetBackoff(ctx, account.Key, time.Now().Add(backoffDuration(status)))
-			state := "failed_before_send"
-			if status > 0 {
-				state = "sent_unknown"
+			state := activationFailureState(status)
+			reason := activationReason(status, code)
+			if state == "failed_retriable" {
+				if backoffErr := store.SetBackoff(ctx, account.Key, time.Now().Add(backoffDuration(status))); backoffErr != nil {
+					state = "reserved"
+					reason = "backoff_persist_failed"
+				}
 			}
-			_ = store.SetCycle(ctx, account.Key, snapshot.CycleID, state, status, code)
-			if state == "sent_unknown" {
+			_ = store.SetCycle(ctx, account.Key, snapshot.CycleID, state, status, reason)
+			outcome := RunOutcome{AccountKey: account.Key, State: state, ReasonCode: reason, Model: choice.Model, PriceNanoUSD: choice.CombinedNanoUSD, Source: choice.Source, Attempted: true}
+			run.Outcomes = append(run.Outcomes, outcome)
+			if state == "sent_unknown" || state == "partial" {
 				run.Partial++
 			} else {
 				run.Failed++
@@ -548,23 +509,62 @@ func (s *Service) Scan(ctx context.Context, mode string, selected []string, acti
 		if probeErr != nil {
 			_ = store.SetCycle(ctx, account.Key, snapshot.CycleID, "sent_unknown", status, "verify_failed")
 			run.Partial++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "sent_unknown", ReasonCode: "verification_unavailable", Model: choice.Model, PriceNanoUSD: choice.CombinedNanoUSD, Source: choice.Source, Attempted: true})
 			continue
 		}
 		if !after.Eligible {
 			_ = store.SetCycle(ctx, account.Key, snapshot.CycleID, "verified", status, "")
 			run.Verified++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "verified", ReasonCode: "verified", Model: choice.Model, PriceNanoUSD: choice.CombinedNanoUSD, Source: choice.Source, Attempted: true})
 		} else {
 			_ = store.SetCycle(ctx, account.Key, snapshot.CycleID, "partial", status, "quota_unchanged")
 			run.Partial++
+			run.Outcomes = append(run.Outcomes, RunOutcome{AccountKey: account.Key, State: "partial", ReasonCode: "quota_unchanged", Model: choice.Model, PriceNanoUSD: choice.CombinedNanoUSD, Source: choice.Source, Attempted: true})
 		}
 	}
 	run.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = s.store.SaveRun(ctx, run)
+	if err := s.store.SaveRun(ctx, run); err != nil {
+		s.setScan(err)
+		return run, err
+	}
 	s.mu.Lock()
 	s.lastScan = time.Now()
-	s.lastError = ""
+	if run.Failed > 0 {
+		s.lastError = "scan_completed_with_failures"
+	} else {
+		s.lastError = ""
+	}
 	s.mu.Unlock()
 	return run, nil
+}
+
+func activationFailureState(status int) string {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
+		return "failed_retriable"
+	}
+	if status >= 400 && status < 500 {
+		return "failed_terminal"
+	}
+	return "sent_unknown"
+}
+
+func activationReason(status int, fallback string) string {
+	switch status {
+	case http.StatusUnauthorized:
+		return "activation_unauthorized"
+	case http.StatusForbidden:
+		return "activation_forbidden"
+	case http.StatusTooManyRequests:
+		return "activation_rate_limited"
+	}
+	if status >= 400 && status < 500 {
+		return "activation_rejected"
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "activation_delivery_unknown"
 }
 
 func backoffDuration(status int) time.Duration {

@@ -46,7 +46,36 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}
+	for _, q := range []string{
+		`CREATE TABLE IF NOT EXISTS catalog_cache(name TEXT PRIMARY KEY,payload BLOB NOT NULL,source TEXT NOT NULL,fetched_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS run_outcomes(id INTEGER PRIMARY KEY AUTOINCREMENT,run_id INTEGER NOT NULL,account_key TEXT NOT NULL,state TEXT NOT NULL,reason_code TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',price_nano_usd INTEGER NOT NULL DEFAULT 0,source TEXT NOT NULL DEFAULT '',attempted INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE)`,
+		`CREATE INDEX IF NOT EXISTS run_outcomes_run ON run_outcomes(run_id,id)`,
+		`CREATE INDEX IF NOT EXISTS run_outcomes_account ON run_outcomes(account_key,id DESC)`,
+	} {
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("migrate v1.3.0: %w", err)
+		}
+	}
 	return tx.Commit()
+}
+
+func (s *Store) SaveCatalog(ctx context.Context, name string, payload []byte, source string, fetchedAt time.Time) error {
+	if len(payload) == 0 || len(payload) > maxCatalogBytes {
+		return errors.New("invalid catalog cache payload")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO catalog_cache(name,payload,source,fetched_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET payload=excluded.payload,source=excluded.source,fetched_at=excluded.fetched_at,updated_at=excluded.updated_at`, name, payload, source, fetchedAt.UTC().Format(time.RFC3339Nano), now)
+	return err
+}
+
+func (s *Store) LoadCatalog(ctx context.Context, name string) ([]byte, string, time.Time, error) {
+	var payload []byte
+	var source, fetched string
+	if err := s.db.QueryRowContext(ctx, `SELECT payload,source,fetched_at FROM catalog_cache WHERE name=?`, name).Scan(&payload, &source, &fetched); err != nil {
+		return nil, "", time.Time{}, err
+	}
+	fetchedAt, err := time.Parse(time.RFC3339Nano, fetched)
+	return payload, source, fetchedAt, err
 }
 func (s *Store) Reserve(ctx context.Context, account, cycle, model string) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -61,7 +90,14 @@ func (s *Store) Reserve(ctx context.Context, account, cycle, model string) (bool
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return false, nil
+		res, err = tx.ExecContext(ctx, `UPDATE cycles SET state='reserved',model=?,http_status=0,error_code='',updated_at=? WHERE account_key=? AND cycle_id=? AND state='failed_retriable'`, model, now, account, cycle)
+		if err != nil {
+			return false, err
+		}
+		n, _ = res.RowsAffected()
+		if n == 0 {
+			return false, nil
+		}
 	}
 	return true, tx.Commit()
 }
@@ -125,14 +161,47 @@ type RunRow struct {
 	ID                                                    int64 `json:"id"`
 	StartedAt, FinishedAt, Mode                           string
 	Scanned, Eligible, Verified, Partial, Failed, Skipped int
+	Attempted                                             int
+	Outcomes                                              []RunOutcome `json:"outcomes,omitempty"`
+}
+
+type RunOutcome struct {
+	AccountKey   string `json:"account_key"`
+	State        string `json:"state"`
+	ReasonCode   string `json:"reason_code,omitempty"`
+	Model        string `json:"model,omitempty"`
+	PriceNanoUSD int64  `json:"price_nano_usd,omitempty"`
+	Source       string `json:"source,omitempty"`
+	Attempted    bool   `json:"attempted"`
 }
 
 func (s *Store) SaveRun(ctx context.Context, r RunRow) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO runs(started_at,finished_at,mode,scanned,eligible,verified,partial,failed,skipped) VALUES(?,?,?,?,?,?,?,?,?)`, r.StartedAt, r.FinishedAt, r.Mode, r.Scanned, r.Eligible, r.Verified, r.Partial, r.Failed, r.Skipped)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `INSERT INTO runs(started_at,finished_at,mode,scanned,eligible,verified,partial,failed,skipped) VALUES(?,?,?,?,?,?,?,?,?)`, r.StartedAt, r.FinishedAt, r.Mode, r.Scanned, r.Eligible, r.Verified, r.Partial, r.Failed, r.Skipped)
+	if err != nil {
+		return err
+	}
+	runID, err := result.LastInsertId()
+	if err != nil {
+		return err
+	}
+	for _, outcome := range r.Outcomes {
+		attempted := 0
+		if outcome.Attempted {
+			attempted = 1
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO run_outcomes(run_id,account_key,state,reason_code,model,price_nano_usd,source,attempted,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, runID, outcome.AccountKey, outcome.State, outcome.ReasonCode, outcome.Model, outcome.PriceNanoUSD, outcome.Source, attempted, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 func (s *Store) Runs(ctx context.Context) ([]RunRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,started_at,finished_at,mode,scanned,eligible,verified,partial,failed,skipped FROM runs ORDER BY id DESC LIMIT 100`)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.started_at,r.finished_at,r.mode,r.scanned,r.eligible,r.verified,r.partial,r.failed,r.skipped,COALESCE((SELECT SUM(o.attempted) FROM run_outcomes o WHERE o.run_id=r.id),0) FROM runs r ORDER BY r.id DESC LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}
@@ -140,12 +209,20 @@ func (s *Store) Runs(ctx context.Context) ([]RunRow, error) {
 	out := []RunRow{}
 	for rows.Next() {
 		var r RunRow
-		if err := rows.Scan(&r.ID, &r.StartedAt, &r.FinishedAt, &r.Mode, &r.Scanned, &r.Eligible, &r.Verified, &r.Partial, &r.Failed, &r.Skipped); err != nil {
+		if err := rows.Scan(&r.ID, &r.StartedAt, &r.FinishedAt, &r.Mode, &r.Scanned, &r.Eligible, &r.Verified, &r.Partial, &r.Failed, &r.Skipped, &r.Attempted); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) LastOutcome(ctx context.Context, account string) (RunOutcome, error) {
+	var outcome RunOutcome
+	var attempted int
+	err := s.db.QueryRowContext(ctx, `SELECT account_key,state,reason_code,model,price_nano_usd,source,attempted FROM run_outcomes WHERE account_key=? AND (attempted=1 OR state='failed_before_send') ORDER BY id DESC LIMIT 1`, account).Scan(&outcome.AccountKey, &outcome.State, &outcome.ReasonCode, &outcome.Model, &outcome.PriceNanoUSD, &outcome.Source, &attempted)
+	outcome.Attempted = attempted == 1
+	return outcome, err
 }
 func (s *Store) Health(ctx context.Context) error { return s.db.PingContext(ctx) }
 func (s *Store) Close() error                     { return s.db.Close() }
