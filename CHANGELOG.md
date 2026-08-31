@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1 - 2026-08-30
+
+- Show the percentage and quota rail as remaining capacity instead of consumed capacity.
+
 ## 1.2.0 - 2026-08-30
 
 - Reuse the authenticated Management Center session when the dashboard is embedded.
